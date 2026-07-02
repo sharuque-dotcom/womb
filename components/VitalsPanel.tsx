@@ -73,6 +73,26 @@ function useHeartbeatAudio(bpm: number, enabled: boolean) {
   );
 }
 
+function Stat({
+  label,
+  children,
+  sub,
+}: {
+  label: string;
+  children: React.ReactNode;
+  sub?: string;
+}) {
+  return (
+    <div className="min-w-0">
+      <div className="hud-label">{label}</div>
+      <div className="mt-0.5 truncate text-lg font-light text-white tabular-nums sm:text-xl">
+        {children}
+      </div>
+      {sub && <div className="text-[10px] text-white/35">{sub}</div>}
+    </div>
+  );
+}
+
 export default function VitalsPanel({ week }: { week: number }) {
   const data = getWeek(week);
   const [sound, setSound] = useState(false);
@@ -81,101 +101,68 @@ export default function VitalsPanel({ week }: { week: number }) {
   const beatDuration = data.heartRate > 0 ? 60 / data.heartRate : 0;
 
   return (
-    <div className="grid grid-cols-2 gap-2.5 sm:gap-3">
-      {/* size / fruit */}
-      <div className="rounded-2xl border border-white/10 bg-white/[0.05] p-3.5 backdrop-blur-md sm:p-4">
-        <div className="text-[10px] font-semibold tracking-[0.18em] text-white/40 uppercase">
-          Size of a
-        </div>
-        <div className="mt-1 flex items-center gap-2">
-          <motion.span
-            key={data.fruit.emoji + data.week}
-            initial={{ scale: 0, rotate: -30 }}
-            animate={{ scale: 1, rotate: 0 }}
-            transition={{ type: "spring", stiffness: 260, damping: 14 }}
-            className="text-2xl sm:text-3xl"
-            aria-hidden
-          >
-            {data.fruit.emoji}
-          </motion.span>
-          <span className="text-sm leading-tight font-medium text-ember-300 sm:text-base">
-            {data.fruit.name}
-          </span>
-        </div>
-      </div>
+    <div className="hud-panel grid grid-cols-4 gap-3 rounded-2xl px-4 py-3 sm:gap-5 sm:px-5">
+      <Stat label={data.lengthLabel === "CRL" ? "Length · CRL" : "Length · CHL"}>
+        <AnimatedNumber
+          value={data.lengthCm}
+          format={(v) => (v < 1 ? `${(v * 10).toFixed(0)} mm` : `${v.toFixed(1)} cm`)}
+        />
+      </Stat>
 
-      {/* length */}
-      <div className="rounded-2xl border border-white/10 bg-white/[0.05] p-3.5 backdrop-blur-md sm:p-4">
-        <div className="text-[10px] font-semibold tracking-[0.18em] text-white/40 uppercase">
-          Length · {data.lengthLabel === "CRL" ? "head→bottom" : "head→heel"}
-        </div>
-        <div className="mt-1 text-xl font-semibold text-white sm:text-2xl">
-          <AnimatedNumber
-            value={data.lengthCm}
-            format={(v) => (v < 1 ? `${(v * 10).toFixed(0)} mm` : `${v.toFixed(1)} cm`)}
-          />
-        </div>
-      </div>
+      <Stat label="Weight">
+        <AnimatedNumber
+          value={data.weightG}
+          format={(v) =>
+            v < 1 ? "< 1 g" : v < 1000 ? `${Math.round(v)} g` : `${(v / 1000).toFixed(2)} kg`
+          }
+        />
+      </Stat>
 
-      {/* weight */}
-      <div className="rounded-2xl border border-white/10 bg-white/[0.05] p-3.5 backdrop-blur-md sm:p-4">
-        <div className="text-[10px] font-semibold tracking-[0.18em] text-white/40 uppercase">
-          Weight
-        </div>
-        <div className="mt-1 text-xl font-semibold text-white sm:text-2xl">
-          <AnimatedNumber
-            value={data.weightG}
-            format={(v) =>
-              v < 1 ? "< 1 g" : v < 1000 ? `${Math.round(v)} g` : `${(v / 1000).toFixed(2)} kg`
-            }
-          />
-        </div>
-      </div>
+      <Stat label="Size of" sub={undefined}>
+        <span className="text-base sm:text-lg">{data.fruit.name}</span>
+      </Stat>
 
-      {/* heartbeat */}
+      {/* heartbeat with audio toggle */}
       <button
         onClick={() => data.heartRate > 0 && setSound((s) => !s)}
-        className={`group rounded-2xl border p-3.5 text-left backdrop-blur-md transition-colors sm:p-4 ${
-          sound
-            ? "border-ember-500/60 bg-ember-500/15"
-            : "border-white/10 bg-white/[0.05] hover:bg-white/[0.09]"
-        }`}
         aria-pressed={sound}
         aria-label={
           data.heartRate > 0
             ? `Heartbeat ${data.heartRate} beats per minute. ${sound ? "Mute" : "Play"} heartbeat sound`
             : "Heart not yet beating"
         }
+        className="group min-w-0 text-left"
       >
-        <div className="flex items-center justify-between">
-          <span className="text-[10px] font-semibold tracking-[0.18em] text-white/40 uppercase">
-            Heartbeat
-          </span>
-          <span className="text-[10px] text-white/35">{sound ? "🔊" : "🔈"}</span>
+        <div className="hud-label flex items-center gap-1.5">
+          FHR
+          <span
+            className={`inline-block h-1 w-1 rounded-full ${sound ? "bg-hud-400" : "bg-white/25"}`}
+            aria-hidden
+          />
         </div>
-        <div className="mt-1 flex items-center gap-2">
+        <div className="mt-0.5 flex items-baseline gap-1.5">
           {data.heartRate > 0 ? (
             <>
               <motion.span
-                animate={{ scale: [1, 1.35, 1] }}
+                animate={{ scale: [1, 1.3, 1], opacity: [0.8, 1, 0.8] }}
                 transition={{ duration: beatDuration, repeat: Infinity, ease: "easeOut" }}
-                className="text-xl text-[#f25c54] sm:text-2xl"
+                className="text-sm text-[#ff5b4d]"
                 aria-hidden
               >
-                ♥
+                ●
               </motion.span>
-              <span className="text-xl font-semibold text-white sm:text-2xl">
+              <span className="text-lg font-light text-white tabular-nums sm:text-xl">
                 <AnimatedNumber value={data.heartRate} format={(v) => `${Math.round(v)}`} />
               </span>
-              <span className="text-[11px] text-white/40">bpm</span>
+              <span className="text-[10px] text-white/35">bpm</span>
             </>
           ) : (
-            <span className="text-sm text-white/50">forming…</span>
+            <span className="text-sm text-white/45">forming</span>
           )}
         </div>
         {data.heartRate > 0 && (
-          <div className="mt-0.5 text-[10px] text-white/35 group-hover:text-ember-300/80">
-            tap to {sound ? "mute" : "listen"}
+          <div className="text-[9px] tracking-wider text-white/30 uppercase group-hover:text-hud-400/80">
+            {sound ? "sound on" : "tap to listen"}
           </div>
         )}
       </button>
