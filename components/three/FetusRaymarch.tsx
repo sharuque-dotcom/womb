@@ -28,7 +28,11 @@ const fragmentShader = /* glsl */ `
   uniform float uBeat;      // 0..1 heartbeat envelope
   uniform float uScale;     // global fetus scale
   uniform vec3 uHeart;      // heart position (pre-rotated, unscaled)
-  uniform vec4 uEye;        // closed-eye position (xyz, unscaled) + radius
+  uniform vec4 uHead;       // head center (xyz, unscaled) + radius
+  uniform vec3 uFaceX;      // direction the face points
+  uniform vec3 uFaceY;      // head up
+  uniform vec3 uFaceZ;      // toward the near ear
+  uniform float uFaceDev;   // 0 smooth embryo … 1 sculpted face
   uniform int uCount;
   uniform vec4 uPrimA[${MAX_PRIMS}]; // xyz + radius
   uniform vec4 uPrimB[${MAX_PRIMS}]; // xyz + blend k
@@ -46,6 +50,77 @@ const fragmentShader = /* glsl */ `
   float smin(float a, float b, float k) {
     float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
     return mix(b, a, h) - k * h * (1.0 - h);
+  }
+
+  // smooth subtraction: carve b out of a
+  float smax(float a, float b, float k) {
+    float h = clamp(0.5 - 0.5 * (a + b) / k, 0.0, 1.0);
+    return mix(a, -b, h) + k * h * (1.0 - h);
+  }
+
+  /* head-local coords: x = out of the face, y = up, z = toward near ear.
+     All feature measurements are in units of head radius. */
+  vec3 headLocal(vec3 p) {
+    vec3 d = p - uHead.xyz;
+    return vec3(dot(d, uFaceX), dot(d, uFaceY), dot(d, uFaceZ)) / uHead.w;
+  }
+
+  /* Sculpt eyes, nose, lips, ears into/onto the head. d is the body SDF
+     (unscaled space); returns the refined distance. */
+  float sculptFace(vec3 p, float d) {
+    float dev = uFaceDev;
+    if (dev < 0.05) return d;
+    vec3 q = headLocal(p);
+    // quick reject: only work near the head
+    if (dot(q, q) > 3.2) return d;
+    float hr = uHead.w;
+    float amp = dev;
+
+    // ---- eyes: soft lid mounds with a closed slit ----
+    vec3 eN = vec3(0.74, 0.00, 0.42);   // near eye centre
+    vec3 eF = vec3(0.74, 0.00, -0.42);
+    float eyeR = 0.22 * amp;
+    d = smin(d, (length(q - eN) - eyeR) * hr, 0.055 * hr);
+    d = smin(d, (length(q - eF) - eyeR) * hr, 0.055 * hr);
+    // lid creases — thin capsules carved across each mound
+    vec3 cA = vec3(0.88, -0.04, 0.24);
+    vec3 cB = vec3(0.92, -0.07, 0.56);
+    float crease = sdCapsule(q, cA, cB, 0.030) * hr - 0.012 * hr * amp;
+    d = smax(d, crease, 0.015 * hr);
+    vec3 cA2 = vec3(0.88, -0.04, -0.24);
+    vec3 cB2 = vec3(0.92, -0.07, -0.56);
+    float crease2 = sdCapsule(q, cA2, cB2, 0.030) * hr - 0.012 * hr * amp;
+    d = smax(d, crease2, 0.015 * hr);
+
+    // ---- brow ridge, low over the eyes ----
+    float brow = sdCapsule(q, vec3(0.80, 0.20, 0.38), vec3(0.80, 0.20, -0.38), 0.08 * amp);
+    d = smin(d, brow * hr, 0.11 * hr);
+
+    // ---- nose: bridge, tip and alae ----
+    float bridge = sdCapsule(q, vec3(0.82, 0.20, 0.0), vec3(1.00, -0.10, 0.0), 0.085 * amp);
+    d = smin(d, bridge * hr, 0.05 * hr);
+    float tip = length(q - vec3(1.01, -0.14, 0.0)) - 0.105 * amp;
+    d = smin(d, tip * hr, 0.045 * hr);
+    float alae = length(vec3(q.x, q.y, abs(q.z)) - vec3(0.94, -0.19, 0.10)) - 0.065 * amp;
+    d = smin(d, alae * hr, 0.045 * hr);
+
+    // ---- lips with a mouth line ----
+    float lipU = sdCapsule(q, vec3(0.94, -0.36, 0.13), vec3(0.94, -0.36, -0.13), 0.055 * amp);
+    d = smin(d, lipU * hr, 0.04 * hr);
+    float lipL = sdCapsule(q, vec3(0.90, -0.46, 0.11), vec3(0.90, -0.46, -0.11), 0.050 * amp);
+    d = smin(d, lipL * hr, 0.04 * hr);
+    float mouth = sdCapsule(q, vec3(0.97, -0.41, 0.12), vec3(0.97, -0.41, -0.12), 0.022) * hr
+      - 0.010 * hr * amp;
+    d = smax(d, mouth, 0.012 * hr);
+
+    // ---- near ear: small disc with a crescent fold ----
+    vec3 earC = vec3(-0.10, -0.04, 0.94);
+    float ear = length(q - earC) - 0.21 * amp;
+    d = smin(d, ear * hr, 0.05 * hr);
+    float fold = (length(q - vec3(-0.06, -0.02, 1.06)) - 0.115 * amp) * hr - 0.014 * hr * amp;
+    d = smax(d, fold, 0.02 * hr);
+
+    return d;
   }
 
   // cheap 3d value noise for organic surface detail
@@ -78,14 +153,18 @@ const fragmentShader = /* glsl */ `
       float di = sdCapsule(p, A.xyz, B.xyz, A.w);
       d = smin(d, di, max(B.w, 1e-4));
     }
+    d = sculptFace(p, d);
     return d * uScale;
   }
 
   float map(vec3 p) {
     float d = mapBody(p);
-    // organic micro-relief only near the surface (cheap when far)
+    // organic micro-relief only near the surface (cheap when far),
+    // hushed over the face so eye/lip creases stay crisp
     if (abs(d) < 0.06) {
-      d += (vnoise(p * 18.0 + vec3(0.0, uTime * 0.05, 0.0)) - 0.5) * 0.012;
+      vec3 q = headLocal(p / uScale);
+      float faceZone = uFaceDev * smoothstep(1.5, 0.9, length(q)) * smoothstep(0.1, 0.5, q.x);
+      d += (vnoise(p * 18.0 + vec3(0.0, uTime * 0.05, 0.0)) - 0.5) * 0.012 * (1.0 - 0.8 * faceZone);
     }
     return d;
   }
@@ -190,10 +269,33 @@ const fragmentShader = /* glsl */ `
     float mottle = vnoise(p * 7.0) * 0.6 + vnoise(p * 21.0) * 0.4;
     vec3 albedo = mix(vec3(0.62, 0.26, 0.20), vec3(0.82, 0.44, 0.34), mottle);
 
-    // soft shadow where the closed eye rests
-    float eyeD = length(p - uEye.xyz * uScale);
-    float eyeR = uEye.w * uScale;
-    albedo *= 1.0 - 0.3 * exp(-(eyeD * eyeD) / max(eyeR * eyeR, 1e-5));
+    // facial pigment details in head-local space
+    {
+      vec3 q = headLocal(p / uScale);
+      float amp = uFaceDev;
+      if (amp > 0.05 && dot(q, q) < 3.2) {
+        // soft eye-socket shading
+        float sockN = length(q - vec3(0.74, 0.00, 0.42));
+        float sockF = length(q - vec3(0.74, 0.00, -0.42));
+        albedo *= 1.0 - 0.13 * amp * exp(-sockN * sockN / 0.045);
+        albedo *= 1.0 - 0.13 * amp * exp(-sockF * sockF / 0.045);
+        // lash lines along the lid creases
+        float lashN = sdCapsule(q, vec3(0.88, -0.04, 0.24), vec3(0.92, -0.07, 0.56), 0.0);
+        float lashF = sdCapsule(q, vec3(0.88, -0.04, -0.24), vec3(0.92, -0.07, -0.56), 0.0);
+        albedo *= 1.0 - 0.35 * amp * smoothstep(0.055, 0.0, lashN);
+        albedo *= 1.0 - 0.35 * amp * smoothstep(0.055, 0.0, lashF);
+        // rosy lips
+        float lipD = sdCapsule(q, vec3(0.93, -0.41, 0.12), vec3(0.93, -0.41, -0.12), 0.0);
+        float lipT = smoothstep(0.13, 0.02, lipD) * amp;
+        albedo = mix(albedo, vec3(0.72, 0.26, 0.24), lipT * 0.55);
+        // nostril shadows
+        float nsD = length(vec3(q.x, q.y, abs(q.z)) - vec3(1.03, -0.20, 0.065));
+        albedo *= 1.0 - 0.45 * amp * exp(-nsD * nsD / 0.0035);
+        // warm cheek
+        float cheek = length(q - vec3(0.60, -0.28, 0.55));
+        albedo = mix(albedo, vec3(0.86, 0.38, 0.30), 0.25 * amp * exp(-cheek * cheek / 0.06));
+      }
+    }
 
     // wet amniotic film
     vec3 h = normalize(keyDir + v);
@@ -255,7 +357,11 @@ export default function FetusRaymarch({
       uBeat: { value: 0 },
       uScale: { value: rig.scale },
       uHeart: { value: new THREE.Vector3(...rig.heart) },
-      uEye: { value: new THREE.Vector4(...rig.eye, rig.eyeR) },
+      uHead: { value: new THREE.Vector4(...rig.head, rig.headR) },
+      uFaceX: { value: new THREE.Vector3(...rig.faceX) },
+      uFaceY: { value: new THREE.Vector3(...rig.faceY) },
+      uFaceZ: { value: new THREE.Vector3(...rig.faceZ) },
+      uFaceDev: { value: rig.faceDev },
       uCount: { value: rig.count },
       uPrimA: { value: Array.from({ length: MAX_PRIMS }, (_, i) => new THREE.Vector4(rig.a[i * 4], rig.a[i * 4 + 1], rig.a[i * 4 + 2], rig.a[i * 4 + 3])) },
       uPrimB: { value: Array.from({ length: MAX_PRIMS }, (_, i) => new THREE.Vector4(rig.b[i * 4], rig.b[i * 4 + 1], rig.b[i * 4 + 2], rig.b[i * 4 + 3])) },
@@ -277,7 +383,11 @@ export default function FetusRaymarch({
     const rig = packRig(smoothWeek.current);
     u.uScale.value = rig.scale;
     (u.uHeart.value as THREE.Vector3).set(...rig.heart);
-    (u.uEye.value as THREE.Vector4).set(rig.eye[0], rig.eye[1], rig.eye[2], rig.eyeR);
+    (u.uHead.value as THREE.Vector4).set(rig.head[0], rig.head[1], rig.head[2], rig.headR);
+    (u.uFaceX.value as THREE.Vector3).set(...rig.faceX);
+    (u.uFaceY.value as THREE.Vector3).set(...rig.faceY);
+    (u.uFaceZ.value as THREE.Vector3).set(...rig.faceZ);
+    u.uFaceDev.value = rig.faceDev;
     u.uCount.value = rig.count;
     const A = u.uPrimA.value as THREE.Vector4[];
     const B = u.uPrimB.value as THREE.Vector4[];

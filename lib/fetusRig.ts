@@ -393,9 +393,15 @@ export interface PackedRig {
   b: Float32Array;
   scale: number;
   heart: V3;
-  /** closed-eye position on the camera-facing side + its shadow radius */
-  eye: V3;
-  eyeR: number;
+  /** head local frame for shader-side face sculpting */
+  head: V3;
+  headR: number;
+  /** direction the face points / head-up / toward the near ear (rotated) */
+  faceX: V3;
+  faceY: V3;
+  faceZ: V3;
+  /** facial feature maturity 0..1 (smooth embryo → sculpted face) */
+  faceDev: number;
 }
 
 function rotZ(p: V3, deg: number): V3 {
@@ -413,7 +419,7 @@ function rotY(p: V3, deg: number): V3 {
   return [p[0] * c + p[2] * s, p[1], -p[0] * s + p[2] * c];
 }
 
-const FACE_TURN = 26; // degrees toward camera
+const FACE_TURN = 42; // degrees toward camera
 
 export function packRig(week: number): PackedRig {
   const f = frameAt(week);
@@ -443,17 +449,13 @@ export function packRig(week: number): PackedRig {
   sphere(f.cranium, K * 1.5);
   push(occPos, occPos, f.occiput[1], K * 1.5);
   sphere(f.jaw, K * 1.5);
-  // face profile — nose, lips, chin sculpted off the cranium
+  // chin keeps the jawline in the silhouette; finer features (eyes, nose,
+  // lips, ears) are sculpted analytically in the shader from the head frame
   const cr = f.cranium[1];
   const cx = f.cranium[0][0];
   const cy = f.cranium[0][1];
   const cz = f.cranium[0][2];
-  const faceOn = f.armR > 0.05; // skip on the earliest embryo
-  const nose: V3 = [cx - cr * 0.94, cy - cr * 0.22, cz + cr * 0.06];
-  push(nose, nose, cr * 0.13, 0.05);
-  if (faceOn) {
-    const lips: V3 = [cx - cr * 0.88, cy - cr * 0.46, cz + cr * 0.05];
-    push(lips, lips, cr * 0.1, 0.06);
+  if (f.armR > 0.05) {
     const chin: V3 = [cx - cr * 0.76, cy - cr * 0.64, cz + cr * 0.04];
     push(chin, chin, cr * 0.13, 0.09);
   }
@@ -494,10 +496,28 @@ export function packRig(week: number): PackedRig {
   push(cordZ(f.cord[1], -0.16), cordZ(f.cord[2], -0.34), f.cordR * 0.72, 0.05);
 
   const heart = xf(f.heart);
-  const eye = xf([
-    f.cranium[0][0] - cr * 0.7,
-    f.cranium[0][1] + cr * 0.08,
-    f.cranium[0][2] + cr * 0.54,
-  ]);
-  return { count: n, a, b, scale: f.scale, heart, eye, eyeR: cr * 0.18 };
+
+  // head local frame (rotation only — directions, not points)
+  const rot = (v: V3): V3 => rotY(rotZ(v, f.rot), FACE_TURN);
+  const head = xf([cx, cy, cz]);
+  const faceX = rot([-1, 0, 0]);
+  const faceY = rot([0, 1, 0]);
+  const faceZ = rot([0, 0, 1]);
+  // features emerge between weeks ~9 and 22
+  const dt = Math.min(1, Math.max(0, (f.week - 9) / 13));
+  const faceDev = dt * dt * (3 - 2 * dt);
+
+  return {
+    count: n,
+    a,
+    b,
+    scale: f.scale,
+    heart,
+    head,
+    headR: cr,
+    faceX,
+    faceY,
+    faceZ,
+    faceDev,
+  };
 }
